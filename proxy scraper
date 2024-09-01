@@ -1,0 +1,116 @@
+import requests
+from bs4 import BeautifulSoup
+import socks
+import socket
+
+# Function to fetch proxies from a public proxy list site
+def fetch_proxies(url):
+    proxies = set()
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Check if the request was successful
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Assuming the proxy list has an IP, Port, and Type in specific columns
+        for row in soup.find_all('tr'):
+            cols = row.find_all('td')
+            if len(cols) > 1:
+                ip = cols[0].text.strip()
+                port = cols[1].text.strip()
+                proxy_type = cols[4].text.strip()  # Assuming the proxy type is in the 5th column
+                anonymity_level = cols[6].text.strip() if len(cols) > 6 else 'UNKNOWN'  # Assuming anonymity level is in the 7th column
+                if ip and port:
+                    type_name = identify_proxy_type(proxy_type)
+                    proxies.add(f'{ip}:{port} ({type_name}, {anonymity_level})')
+    except Exception as e:
+        print(f"Error fetching proxies: {e}")
+    return proxies
+
+# Function to identify proxy type
+def identify_proxy_type(proxy_type):
+    proxy_type = proxy_type.lower()
+    if 'socks4' in proxy_type:
+        return 'SOCKS4'
+    elif 'socks5' in proxy_type:
+        return 'SOCKS5'
+    elif 'https' in proxy_type:
+        return 'HTTPS'
+    elif 'http' in proxy_type:
+        return 'HTTP'
+    return 'UNKNOWN'
+
+# Function to test proxy validity and type
+def test_proxy(proxy):
+    ip, port = proxy.split(':')
+    port = int(port.split()[0])  # Handle proxy type info in the same string
+    
+    proxy_types = {
+        'HTTP': 'http://',
+        'HTTPS': 'https://',
+        'SOCKS4': 'socks4://',
+        'SOCKS5': 'socks5://'
+    }
+    
+    for type_name, prefix in proxy_types.items():
+        proxy_url = f'{prefix}{ip}:{port}'
+        
+        try:
+            if type_name in ['HTTP', 'HTTPS']:
+                try:
+                    response = requests.get('http://httpbin.org/ip', proxies={prefix: proxy_url}, timeout=5)
+                    if response.status_code == 200:
+                        anonymity = check_anonymity(response)
+                        return type_name, anonymity
+                except requests.RequestException:
+                    continue
+            else:  # SOCKS4 or SOCKS5
+                try:
+                    sock = socks.socksocket()
+                    sock.set_proxy(getattr(socks, f'SOCKS_{4 if type_name == "SOCKS4" else 5}'))
+                    sock.settimeout(5)
+                    sock.connect((ip, port))
+                    sock.close()
+                    return type_name, 'UNKNOWN'
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"Error testing proxy {proxy_url}: {e}")
+    
+    return 'UNKNOWN', 'UNKNOWN'
+
+# Function to determine anonymity level based on response headers
+def check_anonymity(response):
+    try:
+        original_ip = requests.get('http://httpbin.org/ip').json()['origin']
+        if response.json()['origin'] == original_ip:
+            return 'Transparent'
+        else:
+            return 'Anonymous'  # For simplicity, we assume any non-transparent proxy is anonymous
+    except requests.RequestException as e:
+        print(f"Error checking anonymity: {e}")
+        return 'UNKNOWN'
+
+# Main function
+def main():
+    url = 'https://www.free-proxy-list.net/'  # Example proxy list website
+    proxies = fetch_proxies(url)
+    print(f"Found {len(proxies)} proxies.")
+    
+    valid_proxies = set()
+    for proxy in proxies:
+        proxy_address = proxy.split(' ')[0]  # Extracting address from "address (type)" format
+        proxy_type, anonymity = test_proxy(proxy_address)
+        if proxy_type != 'UNKNOWN':
+            valid_proxies.add(f'{proxy_address} ({proxy_type}, {anonymity})')
+            print(f"Valid {proxy_type} proxy with {anonymity} anonymity: {proxy_address}")
+        else:
+            print(f"Invalid proxy or unknown type: {proxy_address}")
+
+    with open('valid_proxies_with_type_and_anonymity.txt', 'w') as file:
+        for proxy in valid_proxies:
+            file.write(f"{proxy}\n")
+
+    print(f"Saved {len(valid_proxies)} valid proxies to valid_proxies_with_type_and_anonymity.txt")
+
+if __name__ == '__main__':
+    main()
